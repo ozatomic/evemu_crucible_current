@@ -231,18 +231,24 @@ void DestinyManager::ProcessState() {
                 return;
             } else if (m_timeFraction < 0.749 && m_userSpeedFraction < 0.7499) {
                 SetSpeedFraction(1.0f, true);
-            } else if ((sEntityList.GetStamp() - m_stateStamp) > m_timeToEnterWarp + 0.3) {
-                // catchall for turn checks messed up, and m_moveTime > ship align time
+            } else if ((sEntityList.GetStamp() - m_stateStamp) > (m_timeToEnterWarp * 4.0f + 0.3f)) {
+                // Diagnostic catchall.  Was: if server's alignment check hadn't
+                // fired by m_alignTime + 0.3s, force InitWarp anyway.  That
+                // started the server's simulation clock before the client's
+                // destiny.dll actually entered warp (which has its own ~8 deg
+                // alignment gate in Ballpark::Evolve mode-3, per destiny.dll
+                // RE), causing the server to be N seconds "ahead" of the
+                // client for the whole warp and producing a 180-deg flip at
+                // warp end when client finally rendered the pre-warp rotation.
+                // We log instead -- the client will only warp when actually
+                // aligned, so the server should match that.
                 if (mySE->HasPilot()) {
-                    _log(DESTINY__ERROR, "Destiny::ProcessState() Error!  Ship %s(%u) for Player %s(%u) - warp align/speed is incorrect, but time > shipTimeToWarp.",  \
-                                mySE->GetName(), mySE->GetID(), mySE->GetPilot()->GetName(), mySE->GetPilot()->GetCharacterID());
+                    _log(DESTINY__ERROR, "Destiny::ProcessState() Warp alignment for Ship %s(%u) [Player %s(%u)] exceeded 4x m_alignTime without aligning (degrees=%.2f, timeFraction=%.3f).  Not forcing InitWarp -- client gates its own warp activation.", \
+                                mySE->GetName(), mySE->GetID(), mySE->GetPilot()->GetName(), mySE->GetPilot()->GetCharacterID(), degrees, m_timeFraction);
                 } else {
-                    _log(DESTINY__ERROR, "Destiny::ProcessState() Error!  NPC %s(%u) - warp align/speed is incorrect, but time > shipTimeToWarp.",  \
-                            mySE->GetName(), mySE->GetID());
+                    _log(DESTINY__ERROR, "Destiny::ProcessState() Warp alignment for NPC %s(%u) exceeded 4x m_alignTime without aligning (degrees=%.2f, timeFraction=%.3f).  Not forcing InitWarp.", \
+                            mySE->GetName(), mySE->GetID(), degrees, m_timeFraction);
                 }
-                m_shipHeading = toVec;
-                InitWarp();
-                return;
             }
 
             MoveObject();
@@ -577,6 +583,45 @@ void DestinyManager::Halt() {
 
     if (is_log_enabled(DESTINY__MOVE_TRACE))
         _log(DESTINY__MOVE_TRACE, "Destiny::Halt() - %s(%u): m_shipHeading: %.3f,%.3f,%.3f", \
+                mySE->GetName(), mySE->GetID(), m_shipHeading.x, m_shipHeading.y, m_shipHeading.z);
+}
+
+void DestinyManager::HaltKeepHeading() {
+    // Same shape as Halt() but preserves m_shipHeading and seeds m_targetPoint far
+    // along that heading. Called from WarpStop() so the ship can come to a stop
+    // pointing along the warp axis. The seeded target avoids the
+    // "TargetPoint is null" error in IsTurn() if any tick runs before the next
+    // user command arrives.
+    SafeDelete(m_warpState);
+
+    m_ballMode = Destiny::Ball::Mode::STOP;
+    m_stop = true;
+    m_accel = false;
+    m_decel = false;
+    m_turning = false;
+    m_maxSpeed = 0.0f;
+    m_velocity = GVector(NULL_ORIGIN);
+    m_moveTime = 0.0;
+    m_prevSpeed = 0.0f;
+    m_stateStamp = 0;
+    m_stopDistance = 0;
+    m_targetDistance = 0;
+    m_followDistance = 0;
+    m_prevSpeedFraction = 0.0f;
+    m_userSpeedFraction = 0.0f;
+    m_activeSpeedFraction = 0.0f;
+    m_timeFraction = 0.0f;
+    m_maxOrbitSpeedFraction = 1.0f;
+
+    m_targetEntity.first = 0;
+    m_targetEntity.second = nullptr;
+
+    m_targetPoint = m_position + (m_shipHeading * 1.0e10);
+
+    ClearTurn();
+
+    if (is_log_enabled(DESTINY__MOVE_TRACE))
+        _log(DESTINY__MOVE_TRACE, "Destiny::HaltKeepHeading() - %s(%u): m_shipHeading: %.3f,%.3f,%.3f", \
                 mySE->GetName(), mySE->GetID(), m_shipHeading.x, m_shipHeading.y, m_shipHeading.z);
 }
 
@@ -1531,8 +1576,12 @@ void DestinyManager::InitWarp() {
         // all ships base time is 29s for distances > ship warp speed
         m_warpAccelTime = 7;
         m_warpDecelTime = 21; // accel *3
-        decelDistance = exp(static_cast<double>(m_warpDecelTime));   // ship warp speed in meters * 1.7
-        accelDistance = exp(static_cast<double>(3) * static_cast<double>(m_warpAccelTime));       // ship warp speed in meters
+        // k = 3 per destiny.dll DAT_10063fe0.  Accel covers v_peak/k (integral of
+        // k*exp(k*t) from 0 to t_a).  Decel covers v_peak/k (integral of
+        // (v_peak/k)*exp(-tau) from 0 to inf).  decelDist must match WarpDecel's
+        // velocity coefficient or position will desync from reported velocity.
+        accelDistance = warpSpeedInMeters / 3.0;
+        decelDistance = warpSpeedInMeters / 3.0;
         cruiseDistance = (static_cast<double>(m_targetDistance) - accelDistance - decelDistance);
         cruiseTime = static_cast<float>(cruiseDistance / warpSpeedInMeters);
     }
@@ -1666,6 +1715,11 @@ void DestinyManager::WarpAccel(uint16 sec_into_warp) {
             m_warpState->cruise = true;
         } else {
             m_warpState->decel = true;
+            // Short-warp path (cruise skipped): seed decelStartTime to this tic
+            // so WarpDecel's formula has a consistent anchor.  Without this it
+            // would fall back to the integer m_warpDecelTime and reintroduce
+            // the cruise->decel teleport on short warps.
+            m_warpState->decelStartTime = static_cast<double>(sec_into_warp);
         }
     }
 
@@ -1695,6 +1749,14 @@ void DestinyManager::WarpCruise(uint16 sec_into_warp) {
     if ((m_targetDistance - m_warpState->warpSpeed) < m_warpState->decelDist) {
         m_warpState->cruise = false;
         m_warpState->decel = true;
+        // Anchor decel to the exact (fractional) wall-clock second at which
+        // m_targetDistance crosses decelDist.  Without this, WarpDecel restarts
+        // the formula from decelDist regardless of where cruise left the ship
+        // (up to one warpSpeed worth of teleport per warp -- multiple AU for
+        // long warps -- which the client interprets as the ship punching past
+        // its destination).
+        m_warpState->decelStartTime = static_cast<double>(sec_into_warp)
+            + (m_targetDistance - m_warpState->decelDist) / m_warpState->warpSpeed;
     }
 
     if (is_log_enabled(DESTINY__WARP_TRACE)) {
@@ -1713,21 +1775,33 @@ void DestinyManager::WarpCruise(uint16 sec_into_warp) {
 }
 
 void DestinyManager::WarpDecel(uint16 sec_into_warp) {
-    /* For deceleration, k = -1.
-     * distance = e^(k*s)
-     * speed = -k*e^(k*s)
+    /* Warp deceleration -- matches client destiny.dll (DAT_10063fe0 = 3.0).
+     *   |v(t)|   = (v_peak / k) * exp(-(t - t_c))
+     *   d_rem(t) = (v_peak / k) * exp(-(t - t_c))
+     * t_c is the *continuous* time cruise crossed decelDist, recorded in
+     * decelStartTime by the WarpCruise (or WarpAccel no-cruise) transition.
+     * Falls back to the legacy integer m_warpDecelTime if unset, so the math
+     * degrades gracefully rather than crashing.
+     * decelDist is sized to v_peak/k in InitWarp so position derivative
+     * stays consistent with the reported velocity.
      */
-    uint8 decelTime = (sec_into_warp - m_warpDecelTime);
+    double decelTime;
+    if (m_warpState->decelStartTime >= 0.0) {
+        decelTime = static_cast<double>(sec_into_warp) - m_warpState->decelStartTime;
+    } else {
+        decelTime = static_cast<double>(sec_into_warp - m_warpDecelTime);
+    }
+
     double currentDistance = (m_warpState->total_distance - (exp(-decelTime) * m_warpState->decelDist));
     m_targetDistance = static_cast<double>(m_warpState->total_distance - currentDistance);
-    double currentShipSpeed = (m_warpState->warpSpeed * exp(-decelTime));
+    double currentShipSpeed = ((m_warpState->warpSpeed / 3.0) * exp(-decelTime));
 
     if (is_log_enabled(DESTINY__WARP_TRACE))
-        _log(DESTINY__WARP_TRACE, "Destiny::WarpDecel(): %s(%u) - Warp Decelerating(%us/%us): velocity %.4f m/s with %.2f m left to go.", \
+        _log(DESTINY__WARP_TRACE, "Destiny::WarpDecel(): %s(%u) - Warp Decelerating(%.3fs/%us): velocity %.4f m/s with %.2f m left to go.", \
                 mySE->GetName(), mySE->GetID(), decelTime, sec_into_warp, currentShipSpeed, m_targetDistance);
 
     WarpUpdate(currentShipSpeed);
-    if (currentShipSpeed <= m_speedToLeaveWarp)
+    if (currentShipSpeed <= m_radius)
         WarpStop(currentShipSpeed);
 }
 
@@ -1788,7 +1862,9 @@ void DestinyManager::WarpStop(double currentShipSpeed) {
         _log(AUTOPILOT__MESSAGE, "Destiny::WarpStop(): %s(%u) - Warp complete.", mySE->GetName(), mySE->GetID());
         mySE->GetPilot()->SetLoginWarpComplete();
     }
-    m_targetPoint += (m_warpState->warp_vector *10000);
+    // Capture the warp axis NOW; SafeDelete(m_warpState) below frees it.
+    GVector warpAxis = m_warpState->warp_vector;
+
     // SetSpeedFraction() checks for m_state = Warp and warpstate != null to set decel variables correctly with warp decel.
     //   have to call this BEFORE deleting or reseting m_state or WarpState.
     SetSpeedFraction(0.0f);
@@ -1799,13 +1875,23 @@ void DestinyManager::WarpStop(double currentShipSpeed) {
         mySE->GetNPCSE()->GetAIMgr()->WarpOutComplete();
     }
 
-    // TODO: when exiting warp, and attempting to warp again shortly after, the
-    // ball mode reaches a weird state where it goes from Warp to a regular
-    // move. Halting the ship after warp completes seems to fix this, but it's
-    // not a good fix, because the client shows that the ship moves a few meters
-    // forward while decelerating - meaning that the client and server are
-    // briefly out of sync because the server thinks the ship is halted.
-    Halt();
+    m_shipHeading = warpAxis;
+
+    // Crucible warp-end packet (per packets/dumps/*-89-bytes & 121-bytes captures):
+    //   SetBallMassive(ball, 0) + Stop(ball)
+    // Both in one DoDestinyUpdate.  No CmdGotoDirection -- the client's
+    // destiny.dll handles orientation entirely on its own at warp exit.
+    // SetBallMassive(0) clears the "in warp transition" flag set at warp
+    // start; without it the client stays in a half-warp visual state and
+    // renders the orientation snap as part of its mode-exit animation,
+    // visible as a 180-deg flip when the pre-warp alignment was large.
+    SetBallMassive bm;
+    bm.entityID = mySE->GetID();
+    bm.is_massive = false;
+    PyTuple *up = bm.Encode();
+    SendSingleDestinyUpdate(&up, true);   // consumed
+
+    HaltKeepHeading();
 }
 
 //called whenever an entity is going away and can no longer be used as a target
@@ -2049,7 +2135,12 @@ void DestinyManager::WarpTo(const GPoint& where, int32 distance/*0*/, bool autoP
             wt.dest_x = m_targetPoint.x;
             wt.dest_y = m_targetPoint.y;
             wt.dest_z = m_targetPoint.z;
-            wt.distance = m_stopDistance;
+            // Landing offset is 0 here: server already pre-shifts m_targetPoint by
+            // m_stopDistance above (line 2081).  The destiny.dll Ball::WarpActivate
+            // does its own landing_offset shift on whatever target we send; if we
+            // also send m_stopDistance the ship lands at 2x the intended distance
+            // (confirmed by Incursion packet capture which uses 0 here).
+            wt.distance = 0;
             wt.warpSpeed = GetWarpSpeed();
         updates.push_back(wt.Encode());
         OnSpecialFX10 sfx;
@@ -2155,7 +2246,8 @@ void DestinyManager::WarpTo(const GPoint& where, int32 distance/*0*/, bool autoP
     wt.dest_x = m_targetPoint.x;
     wt.dest_y = m_targetPoint.y;
     wt.dest_z = m_targetPoint.z;
-    wt.distance = m_stopDistance;
+    // See note above re: landing offset = 0 (server pre-shifted m_targetPoint).
+    wt.distance = 0;
     wt.warpSpeed = GetWarpSpeed(); // warp speed x10
 
     updates.push_back(wt.Encode());
@@ -2172,10 +2264,14 @@ void DestinyManager::WarpTo(const GPoint& where, int32 distance/*0*/, bool autoP
     SendDestinyUpdate(updates);
     updates.clear();
 
-    //set massive for warp, per client, but self-only
+    // Set massive=TRUE at warp start, per Crucible packet capture
+    // (packets/dumps/*WarpTo*.txt).  Despite the "Massive" name, the value 1
+    // marks the ball as being in a special-physics transition state (i.e.
+    // warping) -- not "has collision".  Warp end sends SetBallMassive(0) from
+    // WarpStop to clear it.  Our prior value of false here was backwards.
     SetBallMassive bm;
     bm.entityID = mySE->GetID();
-    bm.is_massive = false;       // disable client-side bump checks
+    bm.is_massive = true;
     PyTuple *up = bm.Encode();
     SendSingleDestinyUpdate(&up, true);   // consumed
 

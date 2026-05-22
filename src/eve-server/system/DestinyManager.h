@@ -128,6 +128,7 @@ public:
     /* Global Actions */
     void Stop();
     void Halt();     // puts entity at 0 velocity
+    void HaltKeepHeading();  // like Halt() but preserves m_shipHeading; used at warp exit
     void Eject();   // avoid numerous other redirect calls
     void SetCloak(bool set=false)                       { m_cloaked = set; }
 
@@ -372,7 +373,8 @@ private:
         accel(accel_),
         cruise(cruise_),
         decel(decel_),
-        warp_vector(warp_vector_)
+        warp_vector(warp_vector_),
+        decelStartTime(-1.0)
         {}
         uint32 start_time;          //from sEntityList::GetStamp()
         double total_distance;      //in m
@@ -385,6 +387,11 @@ private:
         bool cruise;
         bool decel;
         GVector warp_vector;        //target direction based on ship's initial position
+        double decelStartTime;      //fractional sec_into_warp when m_targetDistance crosses decelDist.
+                                    //-1.0 until set by WarpCruise transition (or WarpAccel no-cruise path).
+                                    //Used by WarpDecel for continuous handoff -- without it, the decel
+                                    //formula restarts from decelDist regardless of where cruise left
+                                    //the ship, producing a multi-AU teleport per warp.
     };
     WarpState* m_warpState;		    //we own this.
 };
