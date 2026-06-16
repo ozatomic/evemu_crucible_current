@@ -25,7 +25,7 @@
 
 #include "eve-server.h"
 
-
+#include "EVEServerConfig.h"
 #include "account/UserService.h"
 #include "services/ServiceManager.h"
 
@@ -179,6 +179,14 @@ PyResult UserService::ReverseRedeem(PyCallArgs& call, PyInt* itemID)
 
 PyResult UserService::GetCreateDate(PyCallArgs& call)
 {
+    // The only client consumer of this RPC is tutorialsvc.py:1506, which sets
+    // tutorialNoob = (now < createDate + 14 days). Returning the real create
+    // date flags every fresh char on a dev server as a noob and auto-opens
+    // the intro tutorial. Backdate by 15 days when DisableTutorials is set
+    // so tutorialNoob = False everywhere it gates UI prompts.
+    if (sConfig.server.DisableTutorials)
+        return new PyLong(Win32TimeNow() - 15 * Win32Time_Day);
+
     return new PyLong(call.client->GetChar()->createDateTime());
 }
 

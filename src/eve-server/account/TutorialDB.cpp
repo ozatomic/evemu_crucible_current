@@ -133,6 +133,24 @@ PyRep *TutorialDB::GetCategories() {
     return DBResultToRowset(res);
 }
 
+PyRep *TutorialDB::GetDeclinedTutorialState() {
+    // Synthesize a "every tutorial already declined" rowset for the
+    // client's GetCharacterTutorialState consumer (tutorialsvc.py:1513).
+    // eventTypeID 158 == declined; the client filters those out and persists
+    // settings.char.ui.showTutorials = 0 on the last iteration.
+    DBQueryResult res;
+
+    if (!sDatabase.RunQuery(res,
+        "SELECT tutorialID, 0 AS pageID, 158 AS eventTypeID"
+        " FROM tutorials"))
+    {
+        codelog(DATABASE__ERROR, "Error in query: %s", res.error.c_str());
+        return nullptr;
+    }
+
+    return DBResultToRowset(res);
+}
+
 PyRep *TutorialDB::GetTutorialsAndConnections(uint8 raceID) {
     DBQueryResult res;
     sDatabase.RunQuery(res, "SELECT tutorialID, %u AS raceID, nextTutorialID FROM tutorials", raceID);

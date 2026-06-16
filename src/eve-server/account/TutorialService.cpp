@@ -25,7 +25,7 @@
 
 #include "eve-server.h"
 
-
+#include "EVEServerConfig.h"
 #include "account/TutorialService.h"
 
 TutorialService::TutorialService() :
@@ -245,7 +245,13 @@ PyResult TutorialService::GetCategories(PyCallArgs &call) {
 
 //00:25:53 L TutorialService::Handle_GetCharacterTutorialState(): size= 0
 PyResult TutorialService::GetCharacterTutorialState(PyCallArgs& call) {
-  /*  Empty Call  */
+    // When DisableTutorials is set, return one "declined" (eventTypeID=158)
+    // row per tutorial so the client suppresses the on-dock intro overlay
+    // for every character. Avoids the missing-shader (pointandspot.fxp)
+    // crash path inside the tutorial UI's CQ scene load. Flip the flag off
+    // in eve-server.xml when working on the tutorial system itself.
+    if (sConfig.server.DisableTutorials)
+        return m_db.GetDeclinedTutorialState();
 
     return new PyInt( 0 );
 }

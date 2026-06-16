@@ -49,6 +49,7 @@ public:
     struct {
         bool TraderJoe;
         bool DisableIGB;
+        bool DisableTutorials;
         bool BulkDataOD;
         bool NoobShipCheck;
         bool ModuleAutoOff;

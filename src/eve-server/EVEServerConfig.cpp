@@ -51,6 +51,7 @@ EVEServerConfig::EVEServerConfig()
     server.ServerSleepTime = 10 /*ms*/;
     server.idleSleepTime = 1000;
     server.DisableIGB = true;
+    server.DisableTutorials = true;
     server.MaxThreadReport = 20;
     server.ModuleAutoOff = false;
     server.ModuleDamageChance = 0.35;
@@ -325,6 +326,7 @@ bool EVEServerConfig::ProcessEveServer( const TiXmlElement* ele )
 bool EVEServerConfig::ProcessServer( const TiXmlElement* ele )
 {
     AddValueParser( "DisableIGB",           server.DisableIGB );
+    AddValueParser( "DisableTutorials",     server.DisableTutorials );
     AddValueParser( "TraderJoe",            server.TraderJoe );
     AddValueParser( "maxPlayers",           server.maxPlayers );
     AddValueParser( "NoobShipCheck",        server.NoobShipCheck );
@@ -347,6 +349,7 @@ bool EVEServerConfig::ProcessServer( const TiXmlElement* ele )
     const bool result = ParseElementChildren( ele );
 
     RemoveParser( "DisableIGB" );
+    RemoveParser( "DisableTutorials" );
     RemoveParser( "TraderJoe" );
     RemoveParser( "maxPlayers" );
     RemoveParser( "NoobShipCheck" );

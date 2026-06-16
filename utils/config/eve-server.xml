@@ -49,6 +49,7 @@ boolean can use either 0/1 OR true/false.
         <MaxThreadReport>10</MaxThreadReport>
         <UseMarketBot>false</UseMarketBot><!-- this is coded in eve gate.  not needed here -->
         <DisableIGB>false</DisableIGB>
+        <DisableTutorials>true</DisableTutorials><!-- bool - suppress the on-dock intro tutorial overlay for every character. Set false when working on the tutorial system itself. -->
         <BulkDataOD>true</BulkDataOD>  <!-- bool  -OD = OnDemand.  false loads data on server startup.  true loads data on first call -->
         <ModuleAutoOff>true</ModuleAutoOff><!-- bool  - automatically deactivate rr-type module when target is full -->
         <ModuleDamageChance>0.1</ModuleDamageChance>  <!-- chance to apply damage to random modules when shields are depleted -->
